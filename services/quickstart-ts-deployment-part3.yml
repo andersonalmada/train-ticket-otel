@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-ui-dashboard
+spec:
+  selector:
+    matchLabels:
+      app: ts-ui-dashboard
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: ts-ui-dashboard
+    spec:
+      containers:
+        - name: ts-ui-dashboard
+          #image: codewisdom/ts-ui-dashboard:0.2.0
+          image: andersonalmada/ts-ui-dashboard
+          imagePullPolicy: Always
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 100Mi
+            limits:
+              cpu: 500m
+              memory: 500Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ts-ui-dashboard
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      nodePort: 32677
+  selector:
+    app: ts-ui-dashboard
+---
+
