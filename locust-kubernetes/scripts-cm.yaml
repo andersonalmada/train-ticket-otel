@@ -1,0 +1,237 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scripts-cm
+data:
+  locustfile.py: |
+    import logging
+    from random import randint, choice
+    from locust import LoadTestShape
+    from locust import HttpUser, task
+    import math
+
+
+    # logging
+    logging.getLogger().setLevel(logging.INFO)
+    
+    class DoubleWave(LoadTestShape):
+
+      # setup - will run for 30 mins
+      base_users = 1
+      peak_users = 2
+      base_duration = 40
+      peak_duration = 80
+      cycle_time = base_duration + peak_duration
+      n_cycles = 5
+      time_limit = cycle_time * n_cycles
+      
+      def get_cycle_stages(self, i):
+        return [
+          {"duration": self.cycle_time * i + self.base_duration, "users": 1, "spawn_rate": 50},
+          {"duration": self.cycle_time * i + self.cycle_time, "users": 2, "spawn_rate": 50}
+        ]
+
+      def get_stages(self):
+        stages = []
+        for i in range(self.n_cycles):
+          stages.extend(self.get_cycle_stages(i))
+        return stages
+      
+      def __init__(self):
+        self.stages = self.get_stages()
+      
+      def tick(self):
+        run_time = round(self.get_run_time())
+        for stage in self.stages:
+          if run_time < self.time_limit:
+            if run_time < stage["duration"]:
+              tick_data = (stage["users"], stage["spawn_rate"])
+              return tick_data
+          else:
+            return None
+        return None
+
+    class UserBehavior(HttpUser):
+
+        @task
+        def load(self) -> None:
+            """
+            Simulates user behaviour.
+            :return: None
+            """
+            logging.info("Starting user.")
+            self.visit_home()
+            self.login()
+            self.query_orders()
+            self.pay_order()
+            #self.browse()
+            # 50/50 chance to buy
+            #choice_buy = choice([True, False])
+          # if choice_buy:
+              #self.buy()
+           # self.visit_profile()
+           # self.logout()
+            logging.info("Completed user.")
+
+        def visit_home(self) -> None:
+            """
+            Visits the landing page.
+            :return: None
+            """
+            # load landing page
+            res = self.client.get('/')
+            if res.ok:
+                logging.info("Loaded landing page.")
+            else:
+                logging.error(f"Could not load landing page: {res.status_code}")
+
+        def login(self) -> None:
+            """
+            User login 
+            :return: categories
+            """
+            # load login page
+            url = '/api/v1/users/login'
+
+            # 获取cookies
+            verify_url = '/api/v1/verifycode/generate'
+            r = self.client.get(url=verify_url)
+            r = self.client.post(url=url, json={"username":"fdse_microservice","password":"111111","verificationCode":"1234"})
+    
+            if r.ok:
+              data = r.json().get("data")
+              self.uid = data.get("userId")
+              self.token = data.get("token")
+              self.headers = ({"Authorization": f"Bearer {self.token}"})
+              logging.info(f"login success, uid: {self.uid}")
+              return True
+            else:
+              logging.error("login failed")
+              return False
+
+        def query_orders(self) -> None:
+            """
+            Query orders
+            :return: None
+            """
+            url = "/api/v1/orderservice/order/refresh"
+
+            payload = {
+              "loginId": "4d2a46c7-71cb-4cf1-b5bb-b68406d9da6f",
+            }
+            
+            response = self.client.post(url=url, json=payload)
+        
+            if response.status_code != 200 or response.json().get("data") is None:
+              logging.warning(f"query orders failed, response data is {response.text}")
+              return None
+
+            data = response.json().get("data")
+            pairs = []
+            types = [0, 1, 2]
+            
+            for d in data:
+              # status = 0: not paid
+              # status=1 paid not collect
+              # status=2 collected
+              if d.get("status") in types:
+                order_id = d.get("id")
+                trip_id = d.get("trainNumber")
+                pairs.append((order_id, trip_id))
+
+            logging.info(f"queried {len(pairs)} orders")
+
+        def pay_order(self) -> None:
+            """
+            Pay order
+            :return: None
+            """
+            url = "/api/v1/inside_pay_service/inside_payment"
+
+            payload = {
+              "orderId": "5ad7750b-a68b-49c0-a8c0-32776b067703",
+              "tripId": "G1237"
+            }
+    
+            res = self.client.post(url=url, headers=self.headers, json=payload)
+
+            if res.status_code == 200:
+              logging.info(f"order {payload['orderId']} pay success")
+            else:
+              logging.warning(f"pay order {payload['orderId']} failed, code: {res.status_code}, text: {res.text}")
+              return None            
+
+        def browse(self) -> None:
+            """
+            Simulates random browsing behaviour.
+            :return: None
+            """
+            # execute browsing action randomly up to 5 times
+            for i in range(1, randint(2, 5)):
+                # browses random category and page
+                category_id = randint(2, 6)
+                page = randint(1, 5)
+                category_request = self.client.get("/category", params={"page": page, "category": category_id})
+                if category_request.ok:
+                    logging.info(f"Visited category {category_id} on page 1")
+                    # browses random product
+                    product_id = randint(7, 506)
+                    product_request = self.client.get("/product", params={"id": product_id})
+                    if product_request.ok:
+                        logging.info(f"Visited product with id {product_id}.")
+                        cart_request = self.client.post("/cartAction", params={"addToCart": "", "productid": product_id})
+                        if cart_request.ok:
+                            logging.info(f"Added product {product_id} to cart.")
+                        else:
+                            logging.error(
+                                f"Could not put product {product_id} in cart - status {cart_request.status_code}")
+                    else:
+                        logging.error(
+                            f"Could not visit product {product_id} - status {product_request.status_code}")
+                else:
+                    logging.error(
+                        f"Could not visit category {category_id} on page 1 - status {category_request.status_code}")
+
+        def buy(self) -> None:
+            """
+            Simulates to buy products in the cart with sample user data.
+            :return: None
+            """
+            # sample user data
+            user_data = {
+                "firstname": "User",
+                "lastname": "User",
+                "adress1": "Road",
+                "adress2": "City",
+                "cardtype": "volvo",
+                "cardnumber": "314159265359",
+                "expirydate": "12/2050",
+                "confirm": "Confirm"
+            }
+            buy_request = self.client.post("/cartAction", params=user_data)
+            if buy_request.ok:
+                logging.info(f"Bought products.")
+            else:
+                logging.error("Could not buy products.")
+
+        def visit_profile(self) -> None:
+            """
+            Visits user profile.
+            :return: None
+            """
+            profile_request = self.client.get("/profile")
+            if profile_request.ok:
+                logging.info("Visited profile page.")
+            else:
+                logging.error("Could not visit profile page.")
+
+        def logout(self) -> None:
+            """
+            User logout.
+            :return: None
+            """
+            logout_request = self.client.post("/loginAction", params={"logout": ""})
+            if logout_request.ok:
+                logging.info("Successful logout.")
+            else:
+                logging.error(f"Could not log out - status: {logout_request.status_code}")
